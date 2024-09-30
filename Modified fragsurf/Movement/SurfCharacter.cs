@@ -20,7 +20,7 @@ namespace Fragsurf.Movement {
 
         [Header("Physics Settings")]
         public Vector3 colliderSize = new Vector3 (1f, 2f, 1f);
-        [HideInInspector] public ColliderType collisionType { get { return ColliderType.Box; } } // Capsule doesn't work anymore; I'll have to figure out why some other time, sorry.
+        public ColliderType collisionType { get { return ColliderType.Box; } } // Capsule doesn't work anymore; I'll have to figure out why some other time, sorry.
         public float weight = 75f;
         public float rigidbodyPushForce = 2f;
         public bool solidCollider = false;
@@ -43,6 +43,7 @@ namespace Fragsurf.Movement {
 
         [Header ("Step offset (can be buggy, enable at your own risk)")]
         public bool useStepOffset = false;
+        
         public float stepOffset = 0.35f;
 
         [Header ("Movement Config")]
@@ -68,6 +69,10 @@ namespace Fragsurf.Movement {
 
         private bool underwater = false;
 
+        [Header("Vaulting Settings")]
+        [SerializeField] private float vaultMaxHeight = 1.5f; // Max height for vaulting
+        [SerializeField] private float vaultSpeed = 5f; // Speed of the vault
+        private bool isVaulting = false;
         ///// Properties /////
 
         public MoveType moveType { get { return MoveType.Walk; } }
@@ -111,6 +116,14 @@ namespace Fragsurf.Movement {
 
         }
 
+        public bool isGrounded() {
+            if(_groundObject != null) {
+                return true;
+            }
+            else {
+                return false;
+            }
+        }
         private void Start () {
             
             _colliderObject = new GameObject ("PlayerCollider");
@@ -157,8 +170,8 @@ namespace Fragsurf.Movement {
 
             rb.isKinematic = true;
             rb.useGravity = false;
-            rb.angularDrag = 0f;
-            rb.drag = 0f;
+            rb.angularDamping = 0f;
+            rb.linearDamping = 0f;
             rb.mass = weight;
 
 
@@ -216,12 +229,18 @@ namespace Fragsurf.Movement {
 
         }
 
+
+
         private void Update () {
 
             _colliderObject.transform.rotation = Quaternion.identity;
-
+            if (!isVaulting) {
+                // Check for vault
+                CheckForVault();
+            }
 
             //UpdateTestBinds ();
+            //StepClimb();
             UpdateMoveData ();
             
             // Previous movement code
@@ -262,7 +281,8 @@ namespace Fragsurf.Movement {
             _colliderObject.transform.rotation = Quaternion.identity;
 
         }
-        
+
+
         private void UpdateTestBinds () {
 
             if (Input.GetKeyDown (KeyCode.Backspace))
@@ -270,6 +290,84 @@ namespace Fragsurf.Movement {
 
         }
 
+    private void CheckForVault() {
+        RaycastHit firstHit;
+
+        // Calculate the direction for the forward ray to be level on the XZ plane
+        Vector3 rayStart = transform.position + Vector3.up * 0.5f;
+        Vector3 rayDirection = new Vector3(forward.x, 0f, forward.z).normalized;  // Forward direction projected on XZ plane
+
+        // Layer mask to exclude the player itself
+        int layerMask = ~(1 << gameObject.layer);
+
+        // Draw the forward ray in blue
+        Debug.DrawLine(rayStart, rayStart + rayDirection * 1f, Color.blue);
+
+        // Cast a ray forward to detect a potential vaultable surface
+        if (Physics.Raycast(rayStart, rayDirection, out firstHit, 1f, layerMask)) {
+            Debug.Log("Vaultable surface detected in front: " + firstHit.collider.name);
+
+            if (firstHit.collider != null) {
+                // Calculate the height difference between the player and the ledge
+                float ledgeHeight = firstHit.point.y - transform.position.y;
+
+                // Check if the ledge height is within the vaultable range
+                if (ledgeHeight > 0.2f && ledgeHeight <= vaultMaxHeight) {  // Ensure the height is within a vaultable range
+                    // Start the second raycast from a point above and slightly forward from the first hit point
+                    Vector3 secondRayStart = firstHit.point + (rayDirection * 0.5f) + (Vector3.up * (0.8f * vaultMaxHeight));  // Adjust height to be higher
+                    Vector3 secondRayDirection = Vector3.down;
+
+                    Debug.DrawLine(secondRayStart, secondRayStart + secondRayDirection * vaultMaxHeight, Color.yellow);  // Draw the angled ray in yellow
+
+                    RaycastHit secondHit;
+                    // Perform the second raycast downwards to find a landing spot
+                    if (Physics.Raycast(secondRayStart, secondRayDirection, out secondHit, vaultMaxHeight, layerMask)) {
+                        Debug.Log("Found valid place to land: " + secondHit.point);
+
+                        // Perform vault if a ledge is detected, jump is pressed, and space above is clear
+                        if (Input.GetButton("Jump")) {
+                            Debug.Log("Jump button pressed, starting vault.");
+                            StartCoroutine(PerformVault(secondHit.point, ledgeHeight));
+                        }
+                    } else {
+                        Debug.Log("No valid landing spot detected; likely a wall or drop-off.");
+                    }
+                } else {
+                    Debug.Log("Detected object is too high to vault.");
+                }
+            }
+        }
+    }
+
+    private IEnumerator PerformVault(Vector3 targetPosition, float ledgeHeight) {
+        Debug.Log("You want to vault");
+        isVaulting = true;
+        Collider playerCollider = GetComponent<Collider>();  // Get player's collider
+
+        // Disable player's collider to avoid self-detection
+        if (playerCollider != null) playerCollider.enabled = false;
+
+        Vector3 startPosition = transform.position;
+        float duration = 0.5f;  // Adjust this to control the speed of the vault
+
+        // Adjust the final vault height to ensure the player lands on top of the ledge
+        Vector3 adjustedTargetPosition = new Vector3(targetPosition.x, targetPosition.y + 0.1f + ledgeHeight, targetPosition.z);  // Ensure higher vault
+
+        float elapsedTime = 0f;
+        while (elapsedTime < duration) {
+            transform.position = Vector3.Lerp(startPosition, adjustedTargetPosition, elapsedTime / duration);
+            elapsedTime += Time.deltaTime;
+            yield return null;
+        }
+
+        // Ensure the final position is set correctly
+        transform.position = adjustedTargetPosition;
+
+        // Re-enable player's collider after vault
+        if (playerCollider != null) playerCollider.enabled = true;
+
+        isVaulting = false;
+    }
         private void ResetPosition () {
             
             moveData.velocity = Vector3.zero;
@@ -284,10 +382,10 @@ namespace Fragsurf.Movement {
 
             _moveData.sprinting = Input.GetButton ("Sprint");
             
-            if (Input.GetButtonDown ("Crouch"))
+            if (Input.GetButtonDown ("Enable Debug Button 1"))
                 _moveData.crouching = true;
 
-            if (!Input.GetButton ("Crouch"))
+            if (!Input.GetButton ("Enable Debug Button 1"))
                 _moveData.crouching = false;
             
             bool moveLeft = _moveData.horizontalAxis < 0f;
